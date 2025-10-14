@@ -1,0 +1,101 @@
+pipeline {
+    agent any
+
+    tools {
+        maven "MAVEN3.9"
+        jdk "JDK17"
+        terraform "terraform"
+    }
+
+    environment {
+        AWS_REGION = 'ap-south-1'
+        ECR_REPO = 'project-ecr-repo'
+        IMAGE_TAG = "${env.BUILD_NUMBER}"
+    }
+
+    stages {
+
+        stage('Checkout Code') {
+            steps {
+                git branch: 'main', url: 'https://github.com/neellokhandwala/DevOps-CloudOps-automated-project.git'
+            }
+        }
+
+        stage('Terraform Init & Apply') {
+            steps {
+                dir('infra') {
+                    withAWS(credentials: 'aws creds', region: 'ap-south-1') {
+                        sh 'terraform init'
+                        sh 'terraform apply -auto-approve'
+                    }
+                }
+            }
+        }
+
+        stage('Get AWS Account ID') {
+            steps {
+                withAWS(region: "${AWS_REGION}", credentials: 'aws creds') {
+                    script {
+                        env.AWS_ACCOUNT_ID = sh(
+                            script: "aws sts get-caller-identity --query Account --output text",
+                            returnStdout: true
+                        ).trim()
+                        echo "Docker image will be: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${IMAGE_TAG}"
+                    }
+                }
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    env.IMAGE = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${IMAGE_TAG}"
+                    sh "docker build -t ${IMAGE} ./app"
+                }
+            }
+        }
+
+
+        stage('Push Docker Image to ECR') {
+            steps {
+                withAWS(region: "${AWS_REGION}", credentials: 'aws creds') {
+                    sh """
+                        aws ecr get-login-password --region ${AWS_REGION} | \
+                        docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
+                        
+                        docker push ${IMAGE}
+                        docker tag ${IMAGE} ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:latest
+                        docker push ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:latest
+                    """
+                }
+            }
+        }
+
+        stage('Clean Local Docker Images') {
+            steps {
+                sh "docker rmi ${IMAGE} || true"
+            }
+        }
+
+        stage('ECS Deployment') {
+            steps {
+                script {
+                    def cluster = "project-ecs-cluster"
+                    def service = "project-ecs-service"
+                    withAWS(region: "${AWS_REGION}", credentials: 'aws creds') {
+                        sh "aws ecs update-service --cluster ${cluster} --service ${service} --force-new-deployment"
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo 'Deployment Successful!'
+        }
+        failure {
+            echo 'Deployment Failed! Check logs.'
+        }
+    }
+}
