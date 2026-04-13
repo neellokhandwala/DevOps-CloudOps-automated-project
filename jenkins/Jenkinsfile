@@ -64,9 +64,10 @@ pipeline {
                             returnStdout: true
                         ).trim()
 
-                        env.IMAGE = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${IMAGE_TAG}"
+                        env.ECR_URI = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+                        env.IMAGE = "${ECR_URI}/${ECR_REPO}:${IMAGE_TAG}"
 
-                        echo "Image: ${env.IMAGE}"
+                        echo "Using image: ${env.IMAGE}"
                     }
                 }
             }
@@ -83,12 +84,12 @@ pipeline {
                 withAWS(region: "${AWS_REGION}", credentials: 'aws creds') {
                     sh """
                         aws ecr get-login-password --region ${AWS_REGION} | \
-                        docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
+                        docker login --username AWS --password-stdin ${ECR_URI}
 
                         docker push ${IMAGE}
 
-                        docker tag ${IMAGE} ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:latest
-                        docker push ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:latest
+                        docker tag ${IMAGE} ${ECR_URI}/${ECR_REPO}:latest
+                        docker push ${ECR_URI}/${ECR_REPO}:latest
                     """
                 }
             }
@@ -107,7 +108,8 @@ pipeline {
                         aws ecs update-service \
                         --cluster project-ecs-cluster \
                         --service project-ecs-service \
-                        --force-new-deployment
+                        --force-new-deployment \
+                        --region ${AWS_REGION}
                     """
                 }
             }
@@ -119,7 +121,7 @@ pipeline {
             echo '✅ Deployment Successful!'
         }
         failure {
-            echo '❌ Deployment Failed! Check logs.'
+            echo '❌ Deployment Failed! Check logs carefully.'
         }
     }
 }
