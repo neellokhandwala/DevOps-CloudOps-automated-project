@@ -1,48 +1,33 @@
-resource "aws_ecs_cluster" "project_ecs" {
-  name = "project-ecs-cluster"
+resource "aws_ecs_cluster" "cluster" {
+  name = var.ecs_cluster_name
 }
 
-resource "aws_cloudwatch_log_group" "project_log_group" {
-  name              = "project-log-group"
-  retention_in_days = 7
-}
-
-resource "aws_iam_role" "ecs_task_execution_role" {
-  name = "ecs-task-execution-role"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17",
-    Statement = [{
-      Action = "sts:AssumeRole",
-      Effect = "Allow",
-      Principal = { Service = "ecs-tasks.amazonaws.com" }
-    }]
-  })
-}
-
-resource "aws_iam_role_policy_attachment" "ecs_task_execution_policy" {
-  role       = aws_iam_role.ecs_task_execution_role.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
-}
-
-resource "aws_ecs_task_definition" "project_ecs_task" {
-  family                   = "project-ecs-task"
+resource "aws_ecs_task_definition" "task" {
+  family                   = "project-task"
   requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
   cpu                      = "512"
   memory                   = "1024"
-  network_mode             = "awsvpc"
-  execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
+
+  execution_role_arn = aws_iam_role.ecs_execution_role.arn
 
   container_definitions = jsonencode([
     {
-      name  = "app",
-      image = "${aws_ecr_repository.project_ecr.repository_url}:latest",
-      portMappings = [{ containerPort = 8080, protocol = "tcp" }],
+      name  = "app"
+      image = "${aws_ecr_repository.repo.repository_url}:latest"
+
+      portMappings = [
+        {
+          containerPort = 8080
+          hostPort      = 8080
+        }
+      ]
+
       logConfiguration = {
-        logDriver = "awslogs",
+        logDriver = "awslogs"
         options = {
-          awslogs-group         = aws_cloudwatch_log_group.project_log_group.name,
-          awslogs-region        = "ap-south-1",
+          awslogs-group         = aws_cloudwatch_log_group.ecs_logs.name
+          awslogs-region        = var.aws_region
           awslogs-stream-prefix = "ecs"
         }
       }
@@ -50,16 +35,39 @@ resource "aws_ecs_task_definition" "project_ecs_task" {
   ])
 }
 
-resource "aws_ecs_service" "project_ecs_service" {
-  name            = "project-ecs-service"
-  cluster         = aws_ecs_cluster.project_ecs.id
-  launch_type     = "FARGATE"
-  task_definition = aws_ecs_task_definition.project_ecs_task.arn
-  desired_count   = 2
+resource "aws_ecs_service" "service" {
+  name            = var.ecs_service_name
+  cluster         = aws_ecs_cluster.cluster.id
+  task_definition = aws_ecs_task_definition.task.arn
+  desired_count   = 1   # ⚠️ keep 1 if no load balancer
+
+  launch_type = "FARGATE"
 
   network_configuration {
-    subnets          = ["subnet-0f1986ea60dcd4b2e", "subnet-02204c65881436aa7"]
+    subnets         = var.subnet_ids
+    security_groups = [aws_security_group.ecs_sg.id]
     assign_public_ip = true
-    security_groups  = [aws_security_group.project_sg.id]
   }
+}
+
+resource "aws_iam_role" "ecs_execution_role" {
+  name = "ecsTaskExecutionRole"
+
+  assume_role_policy = jsonencode({
+    Version = "2008-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Service = "ecs-tasks.amazonaws.com"
+        }
+        Action = "sts:AssumeRole"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "ecs_policy" {
+  role       = aws_iam_role.ecs_execution_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }

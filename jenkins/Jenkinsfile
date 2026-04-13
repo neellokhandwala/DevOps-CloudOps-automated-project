@@ -7,6 +7,10 @@ pipeline {
         terraform "terraform"
     }
 
+    options {
+        skipStagesAfterUnstable()
+    }
+
     environment {
         AWS_REGION = 'ap-south-1'
         ECR_REPO = 'project-ecr-repo'
@@ -21,11 +25,30 @@ pipeline {
             }
         }
 
-        stage('Terraform Init & Apply') {
+        stage('Terraform Init') {
             steps {
                 dir('infra') {
-                    withAWS(credentials: 'aws creds', region: 'ap-south-1') {
+                    withAWS(credentials: 'aws creds', region: "${AWS_REGION}") {
                         sh 'terraform init'
+                    }
+                }
+            }
+        }
+
+        stage('Terraform Plan') {
+            steps {
+                dir('infra') {
+                    withAWS(credentials: 'aws creds', region: "${AWS_REGION}") {
+                        sh 'terraform plan'
+                    }
+                }
+            }
+        }
+
+        stage('Terraform Apply') {
+            steps {
+                dir('infra') {
+                    withAWS(credentials: 'aws creds', region: "${AWS_REGION}") {
                         sh 'terraform apply -auto-approve'
                     }
                 }
@@ -40,7 +63,10 @@ pipeline {
                             script: "aws sts get-caller-identity --query Account --output text",
                             returnStdout: true
                         ).trim()
-                        echo "Docker image will be: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${IMAGE_TAG}"
+
+                        env.IMAGE = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${IMAGE_TAG}"
+
+                        echo "Image: ${env.IMAGE}"
                     }
                 }
             }
@@ -48,13 +74,9 @@ pipeline {
 
         stage('Build Docker Image') {
             steps {
-                script {
-                    env.IMAGE = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${IMAGE_TAG}"
-                    sh "docker build -t ${IMAGE} ./app"
-                }
+                sh "docker build -t ${IMAGE} ./app"
             }
         }
-
 
         stage('Push Docker Image to ECR') {
             steps {
@@ -62,8 +84,9 @@ pipeline {
                     sh """
                         aws ecr get-login-password --region ${AWS_REGION} | \
                         docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
-                        
+
                         docker push ${IMAGE}
+
                         docker tag ${IMAGE} ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:latest
                         docker push ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:latest
                     """
@@ -79,12 +102,13 @@ pipeline {
 
         stage('ECS Deployment') {
             steps {
-                script {
-                    def cluster = "project-ecs-cluster"
-                    def service = "project-ecs-service"
-                    withAWS(region: "${AWS_REGION}", credentials: 'aws creds') {
-                        sh "aws ecs update-service --cluster ${cluster} --service ${service} --force-new-deployment"
-                    }
+                withAWS(region: "${AWS_REGION}", credentials: 'aws creds') {
+                    sh """
+                        aws ecs update-service \
+                        --cluster project-ecs-cluster \
+                        --service project-ecs-service \
+                        --force-new-deployment
+                    """
                 }
             }
         }
@@ -92,10 +116,10 @@ pipeline {
 
     post {
         success {
-            echo 'Deployment Successful!'
+            echo '✅ Deployment Successful!'
         }
         failure {
-            echo 'Deployment Failed! Check logs.'
+            echo '❌ Deployment Failed! Check logs.'
         }
     }
 }
